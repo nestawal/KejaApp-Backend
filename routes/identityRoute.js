@@ -1,6 +1,6 @@
 const express =  require("express");
 const { isAdmin } = require("../controllers/identityController");
-const Controller = "C:/Users/USER/kejaApp/Backend/controllers/identityController"
+const Controller = "../controllers/identityController"
 const router = express.Router();
 const {createIdentity,checkIdentity,getNameForId} = require(Controller)
 
