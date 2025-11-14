@@ -10,7 +10,7 @@ const identityModel = require("./schemas/identityModel.js")
 
 const app = express();
 app.use(express.json());
-app.use(cors({origin :'http://localhost:5173'}));
+app.use(cors({origin : ['http://localhost:5173',"https://kejafrontend.netlify.app"]}));
 const bodyParser = require("body-parser");
 const Database = require('./database.js');
 const identityRoute = require("./routes/identityRoute.js");
