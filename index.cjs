@@ -54,269 +54,79 @@ const callbackURL = 'https://bradley-oscillatory-callie.ngrok-free.dev/callback'
 // 1. Generate Access Token
 async function generateToken() {
   const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
-  const response = await axios.get(
-    'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials',
-    { headers: { Authorization: `Basic ${auth}` } }
-  );
-  return response.data.access_token;
+  try {
+    const response = await axios.get(
+      'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials',
+      { headers: { Authorization: `Basic ${auth}` } }
+    );
+    console.log("Token generated successfully");
+    return response.data.access_token;
+  } catch (error) {
+    console.error("Token Generation Error:", error.response?.data || error.message);
+    throw new Error("Failed to generate Safaricom token");
+  }
 }
 
 
-app.post('/paySimulate', async (req, res) => {
-  try {
-    console.log('=== PAY SIMULATION ENDPOINT CALLED ===');
-    const { personId, propertyId, amount, phone, reference, description } = req.body;
-
-    // Validate required fields
-    if (!personId || !propertyId || !amount || !phone) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields',
-        received: { personId, propertyId, amount, phone }
-      });
-    }
-
-    // Convert string IDs to ObjectId to prevent schema errors
-    const mongoose = require('mongoose');
-    const personObjectId = new mongoose.Types.ObjectId(personId);
-    const propertyObjectId = new mongoose.Types.ObjectId(propertyId);
-
-    // Simulate STK Payload
-    const timestamp = moment().format('YYYYMMDDHHmmss');
-    const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
-
-    const stkPayload = {
-      BusinessShortCode: shortcode,
-      Password: password,
-      Timestamp: timestamp,
-      TransactionType: 'CustomerPayBillOnline',
-      Amount: amount,
-      PartyA: phone,
-      PartyB: shortcode,
-      PhoneNumber: phone,
-      CallBackURL: `${callbackURL}?propertyId=${propertyId}&personId=${personId}`,
-      AccountReference: reference || 'Keja BookingApp',
-      TransactionDesc: description || 'Booking Payment'
-    };
-
-    console.log('=== SIMULATION STK PAYLOAD ===');
-    console.log(JSON.stringify(stkPayload, null, 2));
-
-    // Save transaction with proper ObjectId conversion
-    const newTransaction = new transaction({
-      propertyId,
-      personId,
-      amount,
-      phone
-    });
-
-    await newTransaction.save();
-    console.log('Transaction saved with COMPLETED status');
-
-    // Update property status (simulated success)
-    console.log('=== SIMULATING DATABASE UPDATES ===');
-    
-    let databaseUpdates = {
-      userLeased: false,
-      propertyMarkedLeased: false,
-      ownerBalanceUpdated: false
-    };
-
-    // Update user's leased properties - handle ObjectId conversion
-    try {
-      const updatedReqRec = await reqRecModel.findByIdAndUpdate(
-        personId,
-        { $push: { leased: propertyId } },
-        { new: true }
-      );
-      
-      if (updatedReqRec) {
-        databaseUpdates.userLeased = true;
-        console.log("Lease status on request model table updated");
-      } else {
-        console.log('User record not found in reqRecModel');
-      }
-    } catch (userError) {
-      console.log('Could not update user leased properties:', userError.message);
-      // Try alternative approach with string ID if ObjectId fails
-      try {
-        await reqRecModel.findByIdAndUpdate(
-          personId,
-          { $push: { leased: propertyId } },
-          { new: true }
-        );
-        databaseUpdates.userLeased = true;
-        console.log(" Lease status updated (using string IDs)");
-      } catch (altError) {
-        console.log(' Alternative update also failed:', altError.message);
-      }
-    }
-
-    // Update post leased status
-    try {
-      // Try multiple ways to find the post
-      let post = await reqModel.findOne({ postId: propertyObjectId });
-      if (!post) {
-        post = await reqModel.findOne({ postId: propertyId });
-      }
-      if (!post) {
-        post = await reqModel.findOne({ _id: propertyObjectId });
-      }
-
-      if (post) {
-        post.leased = true;
-        await post.save();
-        databaseUpdates.propertyMarkedLeased = true;
-        console.log(` Property ${propertyId} marked as leased`);
-      } else {
-        console.log(' Post not found in reqModel with any identifier');
-      }
-    } catch (postError) {
-      console.log(' Could not update post leased status:', postError.message);
-    }
-
-    // Update owner's balance
-    try {
-      // Try multiple ways to find the post in postModel
-      let postEmail = await postModel.findOne({ _id: propertyObjectId });
-      if (!postEmail) {
-        postEmail = await postModel.findOne({ _id: propertyId });
-      }
-
-      if (postEmail && postEmail.email) {
-        const findEmailId = await identityModel.findOne({ email: postEmail.email });
-        if (findEmailId) {
-          findEmailId.balance = (parseFloat(findEmailId.balance) || 0) + parseFloat(amount);
-          await findEmailId.save();
-          databaseUpdates.ownerBalanceUpdated = true;
-          console.log(` Added balance ${amount} to ${findEmailId.email}`);
-        } else {
-          console.log(' Owner identity not found for email:', postEmail.email);
-        }
-      } else {
-        console.log('Property post not found in postModel or missing email');
-      }
-    } catch (balanceError) {
-      console.log(' Could not update owner balance:', balanceError.message);
-    }
-
-    console.log('=== SIMULATION COMPLETED SUCCESSFULLY ===');
-
-    // Return complete simulation results
-    const simulationResults = {
-      success: true,
-      simulated: true,
-      message: 'Payment simulation completed successfully',
-      stkPayload: stkPayload,
-      transaction: {
-        id: newTransaction._id,
-        propertyId: propertyId,
-        personId: personId,
-        amount: amount,
-        phone: phone,
-        status: 'COMPLETED',
-        mpesaReceiptNumber: newTransaction.mpesaReceiptNumber
-      },
-      databaseUpdates: databaseUpdates,
-      mpesaResponse: {
-        ResponseCode: '0',
-        ResponseDescription: 'Success',
-        MerchantRequestID: `SIM-${Date.now()}`,
-        CheckoutRequestID: `ws_CO_SIM_${Date.now()}`,
-        CustomerMessage: 'Success. Request processed successfully'
-      },
-      timestamp: new Date().toISOString()
-    };
-
-    res.json(simulationResults);
-
-  } catch (error) {
-    console.error('=== SIMULATION ERROR ===');
-    console.error('Error:', error.message);
-    console.error('Stack:', error.stack);
-
-    res.status(500).json({ 
-      success: false,
-      error: 'Payment simulation failed',
-      message: error.message,
-      simulated: true
-    });
-  }
-});
 
 // 2. Initiate STK Push
 app.post('/pay', async (req, res) => {
-  try {
+ try {
     const { personId, propertyId, amount, phone, reference, description } = req.body;
 
+    // 1. Generate Token & Auth
     const token = await generateToken();
     const timestamp = moment().format('YYYYMMDDHHmmss');
     const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
 
+    // 2. Setup Payload 
+    // IMPORTANT: Use the 'phone' variable from req.body
     const stkPayload = {
       BusinessShortCode: shortcode,
       Password: password,
       Timestamp: timestamp,
       TransactionType: 'CustomerPayBillOnline',
       Amount: amount,
-      PartyA: phone,
+      PartyA: phone, // Real phone number (e.g., 254700000000)
       PartyB: shortcode,
-      PhoneNumber: "254708374149",
+      PhoneNumber: phone, // Real phone number
       CallBackURL: `${callbackURL}?propertyId=${propertyId}&personId=${personId}`,
       AccountReference: reference || 'Keja BookingApp',
       TransactionDesc: description || 'Booking Payment'
     };
 
-    console.log('STK Payload:', JSON.stringify(stkPayload, null, 2));
-    console.log('Incoming request:', req.body);
+    console.log('Sending STK Push to Safaricom...');
 
-    // Save transaction immediately
-    const newTransaction = new transaction({
-      propertyId,
-      personId,
-      amount,
-      phone
-    });
-
-    await newTransaction.save();
-    console.log('Transaction saved on initiation');
-
-    // Update property status immediately
-    const post = await reqModel.findOne({ postId: propertyId });
-    if (post) {
-         await reqRecModel.findByIdAndUpdate(
-            personId,
-            {$push : {leased : propertyId}},
-            {new: true}
-          )
-        console.log("lease status on request model table updated")
-
-        post.leased = true;
-        await post.save();
-        console.log(`Property ${propertyId} marked as leased`);
-
-        const postEmail = await postModel.findOne({_id: propertyId})
-        const findEmailId = await identityModel.findOne({email : postEmail.email})
-        findEmailId.balance = amount
-        await findEmailId.save();
-        console.log(`added balance ${amount} to ${findEmailId.email}`)
-    } else {
-      console.log('Post not found');
-    }
-
-    // Send STK Push
-    /**
-     *  const response = await axios.post(
+    // 3. HIT THE ACTUAL SAFARICOM API
+    const response = await axios.post(
       'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
       stkPayload,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-     */
 
-    res.status(200).send("stk succcesful")
+    // 4. Save transaction to DB (Initial state: Pending)
+    const newTransaction = new transaction({
+      propertyId,
+      personId,
+      amount,
+      phone,
+      checkoutRequestId: response.data.CheckoutRequestID, // Store this to track the callback
+      status: 'PENDING' 
+    });
+    await newTransaction.save();
+
+    // Send success response to Frontend
+    res.status(200).json({
+      message: "STK Push sent successfully",
+      data: response.data
+    });
+
   } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.status(500).send('Payment initiation failed');
+    console.error('STK Error:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Payment initiation failed',
+      details: error.response?.data
+    });
   }
 });
 
